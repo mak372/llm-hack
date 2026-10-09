@@ -84,6 +84,15 @@ def _has(cmd: str) -> bool:
     return shutil.which(cmd) is not None
 
 
+def _to_wsl_path(win_path: str) -> str:
+    """Translate a Windows path (C:\\a\\b) to its WSL mount path (/mnt/c/a/b)."""
+    p = os.path.abspath(win_path)
+    drive, rest = os.path.splitdrive(p)
+    if drive:
+        return "/mnt/" + drive[0].lower() + rest.replace("\\", "/")
+    return p.replace("\\", "/")
+
+
 def _ok(argv: list[str], timeout: int = 15) -> bool:
     """True if the command runs and exits 0 (used to confirm a runner is usable)."""
     try:
@@ -140,6 +149,8 @@ def run_semgrep(target: str, configs: list[str] | None = None,
         # Translate host path to the mounted /src path.
         rel = os.path.relpath(target, runner.mount_dir).replace(os.sep, "/")
         scan_target = "/src/" + rel
+    elif runner.kind == "wsl":
+        scan_target = _to_wsl_path(target)
 
     argv = list(runner.argv_prefix) + ["scan", "--json", "--error", "--quiet"]
     for c in configs:
@@ -160,7 +171,15 @@ def run_semgrep(target: str, configs: list[str] | None = None,
             f"Semgrep produced no JSON (exit {proc.returncode}): "
             f"{proc.stderr.strip()[:300]}") from exc
 
-    return parse_results(data, _file_source_lookup)
+    # Semgrep (in Docker/WSL) reports container/Linux paths, but we need the real
+    # local source to map a line to an endpoint. For a single-file scan we know
+    # that file, so read it directly regardless of the reported path.
+    if os.path.isfile(target):
+        local_src = _file_source_lookup(target)
+        lookup = lambda _path: local_src  # noqa: E731
+    else:
+        lookup = _file_source_lookup
+    return parse_results(data, lookup)
 
 
 def map_vuln_class(check_id: str, message: str) -> str | None:
