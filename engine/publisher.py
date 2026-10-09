@@ -38,10 +38,16 @@ class PublishError(RuntimeError):
     pass
 
 
+def _redact(text: str) -> str:
+    """Strip any embedded access token so it never reaches logs or exceptions."""
+    return re.sub(r"(x-access-token:)[^@]+(@)", r"\1***\2", text)
+
+
 def _git(cwd: str, *args: str, check: bool = True) -> str:
     proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
     if check and proc.returncode != 0:
-        raise PublishError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
+        shown = " ".join(_redact(a) for a in args)
+        raise PublishError(f"git {shown} failed: {_redact(proc.stderr.strip())}")
     return proc.stdout.strip()
 
 
