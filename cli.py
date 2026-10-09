@@ -29,7 +29,7 @@ from engine import regression, report
 from engine import sast as sastmod
 from engine.attacks import DEMO_PROFILE, run_all_attacks
 from engine.codemod import load_app_module
-from engine.fixer import GeminiProposer, LLMProposer, TemplateProposer
+from engine.fixer import FallbackProposer, GeminiProposer, LLMProposer, TemplateProposer
 from engine.remediate import remediate_finding
 from engine.report import Outcome
 
@@ -124,19 +124,15 @@ def main(argv=None) -> int:
     # ----- FIX + VERIFY -----
     if args.offline:
         proposer = TemplateProposer()
-    elif args.provider == "anthropic":
-        proposer = LLMProposer()
     else:
-        proposer = GeminiProposer()
-
-    if not args.offline and not args.no_fix:
-        if args.provider == "gemini" and not (os.environ.get("GEMINI_API_KEY")
-                                              or os.environ.get("GOOGLE_API_KEY")):
-            print("note: GEMINI_API_KEY (or GOOGLE_API_KEY) not set; set it or use "
-                  "--offline for template patches.", file=sys.stderr)
-        elif args.provider == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
-            print("note: ANTHROPIC_API_KEY not set; set it or use --offline.",
-                  file=sys.stderr)
+        primary = LLMProposer() if args.provider == "anthropic" else GeminiProposer()
+        # Wrap the LLM so a missing key / unknown model / network error degrades
+        # to deterministic template patches instead of stopping the workflow.
+        proposer = FallbackProposer(
+            primary, TemplateProposer(),
+            on_fallback=lambda reason: print(
+                f"warning: {args.provider} proposer unavailable ({reason}); "
+                f"falling back to deterministic template patches.", file=sys.stderr))
 
     apply_patches = args.apply or args.open_pr
     do_gen_tests = args.gen_tests or args.open_pr
@@ -175,6 +171,9 @@ def main(argv=None) -> int:
     # ----- REPORT -----
     print()
     print(report.terminal_summary(outcomes, sast=sast_data))
+    if isinstance(proposer, FallbackProposer) and proposer.used_fallback:
+        print(f"\n[!] LLM was unavailable ({proposer.reason}); patches above came "
+              f"from the deterministic template fallback, not {args.provider}.")
 
     if args.format == "md":
         text = report.render_markdown(outcomes, args.base_url or args.code, args.offline,

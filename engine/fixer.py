@@ -242,3 +242,35 @@ class GeminiProposer:
             ),
         )
         return strip_code_fences(resp.text or "")
+
+
+class FallbackProposer:
+    """Wrap an LLM proposer and fall back to deterministic template patches if it
+    fails (missing key, unknown model, network error, SDK not installed, empty
+    response). The workflow keeps running instead of stopping.
+
+    Once the primary trips it is not retried for the rest of the run (avoids
+    repeated slow failures). `used_fallback`/`reason` record what happened so the
+    caller can report honestly that a patch came from the template, not the LLM.
+    """
+
+    def __init__(self, primary, fallback=None, on_fallback=None):
+        self.primary = primary
+        self.fallback = fallback or TemplateProposer()
+        self.on_fallback = on_fallback
+        self.used_fallback = False
+        self.reason = ""
+
+    def propose(self, ctx: FixContext, feedback: str | None = None) -> str:
+        if not self.used_fallback:
+            try:
+                out = self.primary.propose(ctx, feedback)
+                if out and out.strip():
+                    return out
+                raise RuntimeError("empty response from LLM")
+            except Exception as exc:  # noqa: BLE001 - any failure must degrade, not stop
+                self.used_fallback = True
+                self.reason = f"{type(exc).__name__}: {exc}"
+                if self.on_fallback:
+                    self.on_fallback(self.reason)
+        return self.fallback.propose(ctx, feedback)
