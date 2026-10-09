@@ -11,7 +11,7 @@ opens a GitHub pull request with the patch, regression tests, and the evidence.
 > The LLM only **proposes** a patch. Whether a fix actually works is decided by
 > plain, deterministic code that re-runs the original exploit. An LLM's opinion
 > can never mark something "fixed." If the re-attack still succeeds, the fix is
-> rejected — no matter how confident the model was.
+> rejected no matter how confident the model was.
 
 ---
 
