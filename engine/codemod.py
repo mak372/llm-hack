@@ -53,6 +53,21 @@ def extract_handler(source: str, name: str) -> HandlerBlock:
     raise ValueError(f"handler {name!r} not found in source")
 
 
+def find_handler_containing_line(source: str, line: int) -> HandlerBlock | None:
+    """Return the route handler whose source span (decorators included) contains
+    `line`, or None. This is the glue from a Semgrep file:line to an endpoint."""
+    tree = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            start = node.decorator_list[0].lineno if node.decorator_list else node.lineno
+            end = node.end_lineno
+            if start <= line <= end:
+                text = "".join(lines[start - 1:end])
+                return HandlerBlock(node.name, start, end, _routes_from_decorators(node), text)
+    return None
+
+
 def replace_handler(source: str, block: HandlerBlock, new_text: str) -> str:
     """Splice new_text in place of the given handler block, changing nothing else."""
     if not new_text.endswith("\n"):

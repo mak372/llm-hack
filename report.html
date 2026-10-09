@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Attack-Fix-Verify Report</title><style>
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0;
+  background: #0f1420; color: #e6e9ef; line-height: 1.5; }
+.wrap { max-width: 900px; margin: 0 auto; padding: 32px 20px 64px; }
+h1 { font-size: 26px; margin: 0 0 4px; }
+.meta { color: #9aa4b2; font-size: 14px; margin-bottom: 20px; }
+.tiles { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 28px; }
+.tile { flex: 1 1 140px; background: #1a2130; border: 1px solid #2a3344;
+  border-radius: 10px; padding: 14px 16px; }
+.tile .n { font-size: 28px; font-weight: 700; }
+.tile .l { color: #9aa4b2; font-size: 13px; }
+.card { background: #1a2130; border: 1px solid #2a3344; border-radius: 12px;
+  padding: 18px 20px; margin-bottom: 18px; }
+.card h2 { font-size: 18px; margin: 0 0 10px; display: flex; align-items: center;
+  justify-content: space-between; gap: 12px; }
+.badge { font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 999px;
+  white-space: nowrap; }
+.b-safe { background: #16351f; color: #8ff0a4; }
+.b-vulnerable { background: #3a1620; color: #ff8ba0; }
+.b-verified { background: #16351f; color: #8ff0a4; }
+.b-needs_review { background: #3a2f12; color: #ffd480; }
+.row { font-size: 14px; margin: 4px 0; }
+.k { color: #9aa4b2; }
+pre { background: #0c111b; border: 1px solid #2a3344; border-radius: 8px;
+  padding: 12px; overflow-x: auto; font-size: 12.5px; margin: 10px 0 0; }
+.diff .add { color: #8ff0a4; } .diff .del { color: #ff8ba0; }
+.checks span { display: inline-block; margin-right: 14px; font-size: 13px; }
+.ok { color: #8ff0a4; } .no { color: #ff8ba0; }
+</style></head>
+<body><div class="wrap">
+<h1>Attack-Fix-Verify Report</h1>
+<div class="meta">Target <code>target_app/app.py</code> · 2026-10-09 15:07 · patches from LLM (claude)</div>
+<div class="tiles"><div class="tile"><div class="n">4</div><div class="l">vulnerabilities confirmed</div></div><div class="tile"><div class="n ok">4</div><div class="l">fixed &amp; verified</div></div><div class="tile"><div class="n">0</div><div class="l">need human review</div></div></div>
+<div class="card"><h2>Semgrep (SAST) <span class="badge b-safe">2 suspects · docker</span></h2><div class="row k">Static analysis vs. active attacks:</div><table style='width:100%;border-collapse:collapse;font-size:13.5px'><tr style='color:#9aa4b2;text-align:left'><th>Vulnerability</th><th>Endpoint</th><th>Semgrep</th><th>Attack</th><th>Verdict</th></tr><tr><td>data_exposure</td><td><code>/me</code></td><td style="text-align:center">—</td><td style="text-align:center">✓</td><td class="no">SAST missed — caught only by active attack</td></tr><tr><td>idor</td><td><code>/invoices/101</code></td><td style="text-align:center">—</td><td style="text-align:center">✓</td><td class="no">SAST missed — caught only by active attack</td></tr><tr><td>missing_auth</td><td><code>/admin/users</code></td><td style="text-align:center">—</td><td style="text-align:center">✓</td><td class="no">SAST missed — caught only by active attack</td></tr><tr><td>sqli</td><td><code>/invoices/search</code></td><td style="text-align:center">✓</td><td style="text-align:center">✓</td><td class="ok">real bug (both agree)</td></tr></table></div>
+<div class="card">
+<h2>Broken Access Control (IDOR)<span class="badge b-verified">FIXED & VERIFIED</span></h2>
+<div class="row"><span class="k">Endpoint:</span> <code>GET /invoices/101</code> <span class="k">severity</span> high</div>
+<div class="row"><span class="k">Evidence:</span> bob (user_id=2) read resource /invoices/101 owned by user_id=1. Expected 403/404.</div>
+<div class="row"><span class="k">Response:</span> status 200</div>
+<div class="row k">Reproduce:</div><pre>curl -s -H &#x27;Authorization: Bearer bob-token&#x27; http://in-process/invoices/101</pre>
+<div class="row checks" style="margin-top:12px"><span class="ok">✓ app starts</span><span class="ok">✓ attack blocked</span><span class="ok">✓ good path preserved</span><span class="k">attempts: 1</span></div>
+<div class="row k" style="margin-top:12px">Applied fix (diff):</div>
+<pre class="diff">--- a: handler /invoices/&lt;int:invoice_id&gt;
++++ b: handler /invoices/&lt;int:invoice_id&gt;
+@@ -10,4 +10,6 @@
+     row = db.execute(&quot;SELECT * FROM invoices WHERE id = ?&quot;, (invoice_id,)).fetchone()
+     if row is None:
+         return jsonify({&quot;error&quot;: &quot;not found&quot;}), 404
+<span class="add">+    if row[&quot;owner_id&quot;] != user[&quot;id&quot;] and not user.get(&quot;is_admin&quot;):</span>
+<span class="add">+        return jsonify({&quot;error&quot;: &quot;forbidden&quot;}), 403</span>
+     return jsonify(dict(row))</pre>
+</div><div class="card">
+<h2>SQL Injection<span class="badge b-verified">FIXED & VERIFIED</span></h2>
+<div class="row"><span class="k">Endpoint:</span> <code>GET /invoices/search</code> <span class="k">severity</span> high</div>
+<div class="row"><span class="k">Evidence:</span> Payload &quot;&#x27; OR 1=1 -- &quot; returned rows owned by other users (baseline returned 1 row(s), injection returned 2).</div>
+<div class="row"><span class="k">Response:</span> status 200</div>
+<div class="row k">Reproduce:</div><pre>curl -s -H &#x27;Authorization: Bearer alice-token&#x27; &#x27;http://in-process/invoices/search?q=%27+OR+1%3D1+--+&#x27;</pre>
+<div class="row checks" style="margin-top:12px"><span class="ok">✓ app starts</span><span class="ok">✓ attack blocked</span><span class="ok">✓ good path preserved</span><span class="k">attempts: 1</span></div>
+<div class="row checks"><span class="ok">✓ Semgrep finding cleared</span></div>
+<div class="row k" style="margin-top:12px">Applied fix (diff):</div>
+<pre class="diff">--- a: handler /invoices/search
++++ b: handler /invoices/search
+@@ -8,12 +8,9 @@
+         return jsonify({&quot;error&quot;: &quot;unauthorized&quot;}), 401
+     q = request.args.get(&quot;q&quot;, &quot;&quot;)
+     db = get_db()
+<span class="del">-    sql = (</span>
+<span class="del">-        &quot;SELECT * FROM invoices WHERE owner_id = %d AND description LIKE &#x27;%%%s%%&#x27;&quot;</span>
+<span class="del">-        % (user[&quot;id&quot;], q)</span>
+<span class="del">-    )</span>
+<span class="add">+    sql = &quot;SELECT * FROM invoices WHERE owner_id = ? AND description LIKE ?&quot;</span>
+     try:
+<span class="del">-        rows = db.execute(sql).fetchall()</span>
+<span class="add">+        rows = db.execute(sql, (user[&quot;id&quot;], f&quot;%{q}%&quot;)).fetchall()</span>
+     except sqlite3.Error as exc:
+         # Leaks the DB error, which itself confirms injection.
+         return jsonify({&quot;error&quot;: str(exc)}), 500</pre>
+</div><div class="card">
+<h2>Sensitive Data Exposure<span class="badge b-verified">FIXED & VERIFIED</span></h2>
+<div class="row"><span class="k">Endpoint:</span> <code>GET /me</code> <span class="k">severity</span> high</div>
+<div class="row"><span class="k">Evidence:</span> Response exposed forbidden field(s): password_hash, token, reset_token, ssn.</div>
+<div class="row"><span class="k">Response:</span> status 200</div>
+<div class="row k">Reproduce:</div><pre>curl -s -H &#x27;Authorization: Bearer alice-token&#x27; http://in-process/me</pre>
+<div class="row checks" style="margin-top:12px"><span class="ok">✓ app starts</span><span class="ok">✓ attack blocked</span><span class="ok">✓ good path preserved</span><span class="k">attempts: 1</span></div>
+<div class="row k" style="margin-top:12px">Applied fix (diff):</div>
+<pre class="diff">--- a: handler /me
++++ b: handler /me
+@@ -6,4 +6,9 @@
+     user = current_user()
+     if user is None:
+         return jsonify({&quot;error&quot;: &quot;unauthorized&quot;}), 401
+<span class="del">-    return jsonify(dict(user))</span>
+<span class="add">+    safe_user = {</span>
+<span class="add">+        &quot;id&quot;: user.get(&quot;id&quot;),</span>
+<span class="add">+        &quot;username&quot;: user.get(&quot;username&quot;),</span>
+<span class="add">+        &quot;is_admin&quot;: user.get(&quot;is_admin&quot;)</span>
+<span class="add">+    }</span>
+<span class="add">+    return jsonify(safe_user)</span></pre>
+</div><div class="card">
+<h2>Missing Authentication<span class="badge b-verified">FIXED & VERIFIED</span></h2>
+<div class="row"><span class="k">Endpoint:</span> <code>GET /admin/users</code> <span class="k">severity</span> high</div>
+<div class="row"><span class="k">Evidence:</span> Endpoint returned status 200 with no credentials; expected 401/403.</div>
+<div class="row"><span class="k">Response:</span> status 200</div>
+<div class="row k">Reproduce:</div><pre>curl -s http://in-process/admin/users</pre>
+<div class="row checks" style="margin-top:12px"><span class="ok">✓ app starts</span><span class="ok">✓ attack blocked</span><span class="ok">✓ good path preserved</span><span class="k">attempts: 1</span></div>
+<div class="row k" style="margin-top:12px">Applied fix (diff):</div>
+<pre class="diff">--- a: handler /admin/users
++++ b: handler /admin/users
+@@ -3,6 +3,11 @@
+     &quot;&quot;&quot;BUG (missing authentication): lists every user with no token check.
+     Fixed when an unauthenticated (or non-admin) caller gets 401/403 while an
+     admin still gets 200.&quot;&quot;&quot;
+<span class="add">+    user = current_user()</span>
+<span class="add">+    if not user:</span>
+<span class="add">+        return jsonify({&quot;error&quot;: &quot;Unauthorized&quot;}), 401</span>
+<span class="add">+    if not user.get(&quot;is_admin&quot;):</span>
+<span class="add">+        return jsonify({&quot;error&quot;: &quot;Forbidden&quot;}), 403</span>
+     db = get_db()
+     rows = db.execute(&quot;SELECT id, username, is_admin FROM users&quot;).fetchall()
+     return jsonify([dict(r) for r in rows])</pre>
+</div>
+</div></body></html>

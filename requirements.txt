@@ -1,4 +1,8 @@
 flask>=3.0
 httpx>=0.27
 pytest>=8.0
-anthropic>=0.40
+
+# LLM provider SDKs for the fixer (install whichever you use; neither is needed
+# for --offline template patches or for running the tests):
+google-genai>=1.0      # --provider gemini (default)
+anthropic>=0.40        # --provider anthropic

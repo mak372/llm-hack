@@ -26,9 +26,10 @@ import sys
 import httpx
 
 from engine import regression, report
-from engine.attacks import ATTACKS, DEMO_PROFILE, run_all_attacks
+from engine import sast as sastmod
+from engine.attacks import DEMO_PROFILE, run_all_attacks
 from engine.codemod import load_app_module
-from engine.fixer import LLMProposer, TemplateProposer
+from engine.fixer import FallbackProposer, GeminiProposer, LLMProposer, TemplateProposer
 from engine.remediate import remediate_finding
 from engine.report import Outcome
 
@@ -52,6 +53,8 @@ def main(argv=None) -> int:
                                       "(default: load --code in-process)")
     p.add_argument("--offline", action="store_true",
                    help="use the template proposer (no API key needed)")
+    p.add_argument("--provider", choices=["gemini", "anthropic"], default="gemini",
+                   help="LLM provider for the fixer (ignored with --offline)")
     p.add_argument("--no-fix", action="store_true", help="only attack and flag")
     p.add_argument("--only", help="comma-separated classes to run "
                                   "(idor,sqli,data_exposure,missing_auth)")
@@ -69,6 +72,10 @@ def main(argv=None) -> int:
                    help="with --open-pr: push the branch and create the PR "
                         "(needs an 'origin' remote and GITHUB_TOKEN)")
     p.add_argument("--base-branch", default="main", help="base branch for the PR")
+    p.add_argument("--sast", action="store_true",
+                   help="run Semgrep as a static layer (pre-scan, cross-check, rescan)")
+    p.add_argument("--sast-config", action="append",
+                   help="Semgrep config (repeatable); default: p/python p/flask p/owasp-top-ten")
     p.add_argument("--restore", action="store_true",
                    help="restore --code from its .bak and exit")
     args = p.parse_args(argv)
@@ -93,12 +100,40 @@ def main(argv=None) -> int:
         wanted = {s.strip() for s in args.only.split(",")}
         findings = [f for f in findings if f.vuln_class in wanted]
 
+    # ----- SCAN (Semgrep static pre-scan + cross-check) -----
+    sast_data = None
+    static_findings = []
+    if args.sast:
+        code_dir = os.path.dirname(os.path.abspath(args.code))
+        runner = sastmod.detect_runner(code_dir)
+        if runner is None:
+            sast_data = sastmod.SastData(
+                ran=False,
+                note="no Semgrep runner available. " + sastmod.runner_hint())
+            print(f"note: Semgrep skipped - {sast_data.note}", file=sys.stderr)
+        else:
+            try:
+                static_findings = sastmod.run_semgrep(
+                    args.code, configs=args.sast_config, runner=runner)
+                sast_data = sastmod.SastData(ran=True, runner=runner.kind,
+                                             findings=static_findings)
+                sast_data.cross = sastmod.cross_check(static_findings, findings)
+            except sastmod.SastUnavailable as exc:
+                sast_data = sastmod.SastData(ran=False, note=str(exc))
+                print(f"note: Semgrep skipped - {exc}", file=sys.stderr)
+
     # ----- FIX + VERIFY -----
-    proposer = TemplateProposer() if args.offline else LLMProposer()
-    if not args.offline and not args.no_fix and not os.environ.get("ANTHROPIC_API_KEY"):
-        print("note: ANTHROPIC_API_KEY not set; the LLM proposer will rely on an "
-              "`ant auth login` profile, or use --offline for template patches.",
-              file=sys.stderr)
+    if args.offline:
+        proposer = TemplateProposer()
+    else:
+        primary = LLMProposer() if args.provider == "anthropic" else GeminiProposer()
+        # Wrap the LLM so a missing key / unknown model / network error degrades
+        # to deterministic template patches instead of stopping the workflow.
+        proposer = FallbackProposer(
+            primary, TemplateProposer(),
+            on_fallback=lambda reason: print(
+                f"warning: {args.provider} proposer unavailable ({reason}); "
+                f"falling back to deterministic template patches.", file=sys.stderr))
 
     apply_patches = args.apply or args.open_pr
     do_gen_tests = args.gen_tests or args.open_pr
@@ -109,22 +144,44 @@ def main(argv=None) -> int:
         if not f.confirmed or args.no_fix:
             outcomes.append(Outcome(f, None))
             continue
+        hint = sastmod.semgrep_context_for(f, static_findings) if static_findings else None
         result = remediate_finding(f, args.code, proposer=proposer,
-                                   profile=DEMO_PROFILE, max_attempts=args.max_attempts)
+                                   profile=DEMO_PROFILE, max_attempts=args.max_attempts,
+                                   sast_hint=hint)
         outcomes.append(Outcome(f, result))
         if result.verified:
             verified_results.append(result)
             if apply_patches:
                 _apply(args.code, result.patched_source)
 
+    # ----- RE-VERIFY (Semgrep rescan of patched code) -----
+    # Only re-scan classes Semgrep actually flagged in the pre-scan; claiming a
+    # finding "cleared" for a class it never saw would be misleading.
+    if sast_data is not None and sast_data.ran and verified_results:
+        flagged = {s.vuln_class for s in static_findings if s.vuln_class}
+        for r in verified_results:
+            if r.finding.vuln_class not in flagged:
+                continue
+            try:
+                post = sastmod.run_semgrep(r.working_app_path, configs=args.sast_config)
+            except sastmod.SastUnavailable:
+                continue
+            still = any(s.vuln_class == r.finding.vuln_class for s in post)
+            sast_data.cleared[r.finding.vuln_class] = not still
+
     # ----- REPORT -----
     print()
-    print(report.terminal_summary(outcomes))
+    print(report.terminal_summary(outcomes, sast=sast_data))
+    if isinstance(proposer, FallbackProposer) and proposer.used_fallback:
+        print(f"\n[!] LLM was unavailable ({proposer.reason}); patches above came "
+              f"from the deterministic template fallback, not {args.provider}.")
 
     if args.format == "md":
-        text = report.render_markdown(outcomes, args.base_url or args.code, args.offline)
+        text = report.render_markdown(outcomes, args.base_url or args.code, args.offline,
+                                      sast=sast_data)
     else:
-        text = report.render_html(outcomes, args.base_url or args.code, args.offline)
+        text = report.render_html(outcomes, args.base_url or args.code, args.offline,
+                                   sast=sast_data)
     with open(args.report, "w", encoding="utf-8") as fh:
         fh.write(text)
     print(f"\nReport written to {args.report}")

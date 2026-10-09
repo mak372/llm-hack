@@ -57,9 +57,11 @@ class FixContext:
     route: str
     finding: Finding
     template: str
+    sast_hint: str | None = None     # optional Semgrep rule/line/message grounding
 
 
-def build_context(finding: Finding, handler_source: str, route: str) -> FixContext:
+def build_context(finding: Finding, handler_source: str, route: str,
+                  sast_hint: str | None = None) -> FixContext:
     return FixContext(
         vuln_class=finding.vuln_class,
         handler_name=HANDLER_BY_CLASS[finding.vuln_class],
@@ -67,6 +69,7 @@ def build_context(finding: Finding, handler_source: str, route: str) -> FixConte
         route=route,
         finding=finding,
         template=FIX_TEMPLATES[finding.vuln_class],
+        sast_hint=sast_hint,
     )
 
 
@@ -141,11 +144,45 @@ _SYSTEM = (
     "- Change only this handler. Do not touch any other code.\n"
     "- Do NOT add import statements. Reuse the existing helpers current_user() "
     "and get_db(), and flask's jsonify/request which are already imported.\n"
+    "- Database rows (from current_user() and get_db() queries) behave like dicts: "
+    "read fields with row[\"col\"] or row.get(\"col\").\n"
     "- Keep the same function name and the same route path.\n"
     "- Make the minimal change that fixes the vulnerability.\n"
     "- Preserve legitimate behaviour: authorized callers must still succeed.\n"
     "- Output only the code. No prose, no markdown fences, no explanation."
 )
+
+
+def build_user_message(ctx: FixContext, feedback: str | None) -> str:
+    """The narrow-context fix request, shared by every LLM proposer."""
+    f = ctx.finding
+    parts = [
+        f"Vulnerability class: {ctx.vuln_class}",
+        f"Route: {ctx.route}",
+        f"How to fix this class: {ctx.template}",
+    ]
+    if ctx.sast_hint:
+        parts.append(f"Static analysis (Semgrep) flagged: {ctx.sast_hint}")
+    parts += [
+        "",
+        "Confirmed exploit (deterministically verified against the running app):",
+        f"  {f.detail}",
+        f"  attack request: {f.request}",
+        f"  attack response: status {f.response.get('status')} "
+        f"body {f.response.get('body')}",
+        "",
+        "Current handler source:",
+        ctx.handler_source,
+    ]
+    if feedback:
+        parts += [
+            "",
+            "Your previous attempt did not pass verification. Fix this and try "
+            "again. Verification feedback:",
+            f"  {feedback}",
+        ]
+    parts.append("\nReturn the corrected handler now.")
+    return "\n".join(parts)
 
 
 class LLMProposer:
@@ -162,32 +199,6 @@ class LLMProposer:
             self._client = anthropic.Anthropic()
         return self._client
 
-    def _build_user_message(self, ctx: FixContext, feedback: str | None) -> str:
-        f = ctx.finding
-        parts = [
-            f"Vulnerability class: {ctx.vuln_class}",
-            f"Route: {ctx.route}",
-            f"How to fix this class: {ctx.template}",
-            "",
-            "Confirmed exploit (deterministically verified against the running app):",
-            f"  {f.detail}",
-            f"  attack request: {f.request}",
-            f"  attack response: status {f.response.get('status')} "
-            f"body {f.response.get('body')}",
-            "",
-            "Current handler source:",
-            ctx.handler_source,
-        ]
-        if feedback:
-            parts += [
-                "",
-                "Your previous attempt did not pass verification. Fix this and try "
-                "again. Verification feedback:",
-                f"  {feedback}",
-            ]
-        parts.append("\nReturn the corrected handler now.")
-        return "\n".join(parts)
-
     def propose(self, ctx: FixContext, feedback: str | None = None) -> str:
         client = self._client_lazy()
         resp = client.messages.create(
@@ -195,7 +206,73 @@ class LLMProposer:
             max_tokens=self.max_tokens,
             output_config={"effort": "high"},
             system=_SYSTEM,
-            messages=[{"role": "user", "content": self._build_user_message(ctx, feedback)}],
+            messages=[{"role": "user", "content": build_user_message(ctx, feedback)}],
         )
         text = "".join(b.text for b in resp.content if b.type == "text")
         return strip_code_fences(text)
+
+
+class GeminiProposer:
+    """Proposes a patch via Google's Gemini API (google-genai). Only proposes.
+
+    Reads the API key from GEMINI_API_KEY (or GOOGLE_API_KEY) automatically, and
+    the model from GEMINI_MODEL (default gemini-3.6-flash -- override if your
+    account exposes a different id).
+    """
+
+    def __init__(self, model: str | None = None, max_tokens: int = 4000):
+        self.model = model or os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+        self.max_tokens = max_tokens
+        self._client = None
+
+    def _client_lazy(self):
+        if self._client is None:
+            from google import genai  # lazy: offline/other providers need no SDK
+            self._client = genai.Client()
+        return self._client
+
+    def propose(self, ctx: FixContext, feedback: str | None = None) -> str:
+        from google.genai import types
+        client = self._client_lazy()
+        resp = client.models.generate_content(
+            model=self.model,
+            contents=build_user_message(ctx, feedback),
+            config=types.GenerateContentConfig(
+                system_instruction=_SYSTEM,
+                max_output_tokens=self.max_tokens,
+                temperature=0,
+            ),
+        )
+        return strip_code_fences(resp.text or "")
+
+
+class FallbackProposer:
+    """Wrap an LLM proposer and fall back to deterministic template patches if it
+    fails (missing key, unknown model, network error, SDK not installed, empty
+    response). The workflow keeps running instead of stopping.
+
+    Once the primary trips it is not retried for the rest of the run (avoids
+    repeated slow failures). `used_fallback`/`reason` record what happened so the
+    caller can report honestly that a patch came from the template, not the LLM.
+    """
+
+    def __init__(self, primary, fallback=None, on_fallback=None):
+        self.primary = primary
+        self.fallback = fallback or TemplateProposer()
+        self.on_fallback = on_fallback
+        self.used_fallback = False
+        self.reason = ""
+
+    def propose(self, ctx: FixContext, feedback: str | None = None) -> str:
+        if not self.used_fallback:
+            try:
+                out = self.primary.propose(ctx, feedback)
+                if out and out.strip():
+                    return out
+                raise RuntimeError("empty response from LLM")
+            except Exception as exc:  # noqa: BLE001 - any failure must degrade, not stop
+                self.used_fallback = True
+                self.reason = f"{type(exc).__name__}: {exc}"
+                if self.on_fallback:
+                    self.on_fallback(self.reason)
+        return self.fallback.propose(ctx, feedback)
