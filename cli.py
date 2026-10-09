@@ -29,7 +29,7 @@ from engine import regression, report
 from engine import sast as sastmod
 from engine.attacks import DEMO_PROFILE, run_all_attacks
 from engine.codemod import load_app_module
-from engine.fixer import LLMProposer, TemplateProposer
+from engine.fixer import GeminiProposer, LLMProposer, TemplateProposer
 from engine.remediate import remediate_finding
 from engine.report import Outcome
 
@@ -53,6 +53,8 @@ def main(argv=None) -> int:
                                       "(default: load --code in-process)")
     p.add_argument("--offline", action="store_true",
                    help="use the template proposer (no API key needed)")
+    p.add_argument("--provider", choices=["gemini", "anthropic"], default="gemini",
+                   help="LLM provider for the fixer (ignored with --offline)")
     p.add_argument("--no-fix", action="store_true", help="only attack and flag")
     p.add_argument("--only", help="comma-separated classes to run "
                                   "(idor,sqli,data_exposure,missing_auth)")
@@ -120,11 +122,21 @@ def main(argv=None) -> int:
                 print(f"note: Semgrep skipped - {exc}", file=sys.stderr)
 
     # ----- FIX + VERIFY -----
-    proposer = TemplateProposer() if args.offline else LLMProposer()
-    if not args.offline and not args.no_fix and not os.environ.get("ANTHROPIC_API_KEY"):
-        print("note: ANTHROPIC_API_KEY not set; the LLM proposer will rely on an "
-              "`ant auth login` profile, or use --offline for template patches.",
-              file=sys.stderr)
+    if args.offline:
+        proposer = TemplateProposer()
+    elif args.provider == "anthropic":
+        proposer = LLMProposer()
+    else:
+        proposer = GeminiProposer()
+
+    if not args.offline and not args.no_fix:
+        if args.provider == "gemini" and not (os.environ.get("GEMINI_API_KEY")
+                                              or os.environ.get("GOOGLE_API_KEY")):
+            print("note: GEMINI_API_KEY (or GOOGLE_API_KEY) not set; set it or use "
+                  "--offline for template patches.", file=sys.stderr)
+        elif args.provider == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
+            print("note: ANTHROPIC_API_KEY not set; set it or use --offline.",
+                  file=sys.stderr)
 
     apply_patches = args.apply or args.open_pr
     do_gen_tests = args.gen_tests or args.open_pr
