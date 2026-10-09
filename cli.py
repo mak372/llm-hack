@@ -146,8 +146,13 @@ def main(argv=None) -> int:
                 _apply(args.code, result.patched_source)
 
     # ----- RE-VERIFY (Semgrep rescan of patched code) -----
+    # Only re-scan classes Semgrep actually flagged in the pre-scan; claiming a
+    # finding "cleared" for a class it never saw would be misleading.
     if sast_data is not None and sast_data.ran and verified_results:
+        flagged = {s.vuln_class for s in static_findings if s.vuln_class}
         for r in verified_results:
+            if r.finding.vuln_class not in flagged:
+                continue
             try:
                 post = sastmod.run_semgrep(r.working_app_path, configs=args.sast_config)
             except sastmod.SastUnavailable:
