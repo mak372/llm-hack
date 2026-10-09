@@ -15,7 +15,7 @@ opens a GitHub pull request with the patch, regression tests, and the evidence.
 
 ---
 
-## How it works — the loop
+## How it works
 
 ```
          ┌───────────────────────────────────────────────────────────────┐
