@@ -101,6 +101,16 @@ def _ok(argv: list[str], timeout: int = 15) -> bool:
         return False
 
 
+def runner_hint() -> str:
+    """Actionable guidance when no runner is available (why + how to fix)."""
+    if _has("docker"):
+        return ("Docker is installed but its engine isn't responding - fully quit "
+                "and reopen Docker Desktop, then confirm `docker ps` works.")
+    if _has("wsl"):
+        return "Install Semgrep in WSL (`pip install semgrep`) or install Docker Desktop."
+    return "Install Docker Desktop (or run Semgrep in CI on a Linux runner)."
+
+
 def detect_runner(target_dir: str | None = None) -> Runner | None:
     """Find a way to run Semgrep that actually works, or None.
 

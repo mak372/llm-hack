@@ -108,7 +108,8 @@ def main(argv=None) -> int:
         runner = sastmod.detect_runner(code_dir)
         if runner is None:
             sast_data = sastmod.SastData(
-                ran=False, note="no Semgrep runner found (PATH, python -m, Docker, WSL)")
+                ran=False,
+                note="no Semgrep runner available. " + sastmod.runner_hint())
             print(f"note: Semgrep skipped - {sast_data.note}", file=sys.stderr)
         else:
             try:
