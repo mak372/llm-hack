@@ -57,9 +57,11 @@ class FixContext:
     route: str
     finding: Finding
     template: str
+    sast_hint: str | None = None     # optional Semgrep rule/line/message grounding
 
 
-def build_context(finding: Finding, handler_source: str, route: str) -> FixContext:
+def build_context(finding: Finding, handler_source: str, route: str,
+                  sast_hint: str | None = None) -> FixContext:
     return FixContext(
         vuln_class=finding.vuln_class,
         handler_name=HANDLER_BY_CLASS[finding.vuln_class],
@@ -67,6 +69,7 @@ def build_context(finding: Finding, handler_source: str, route: str) -> FixConte
         route=route,
         finding=finding,
         template=FIX_TEMPLATES[finding.vuln_class],
+        sast_hint=sast_hint,
     )
 
 
@@ -168,6 +171,10 @@ class LLMProposer:
             f"Vulnerability class: {ctx.vuln_class}",
             f"Route: {ctx.route}",
             f"How to fix this class: {ctx.template}",
+        ]
+        if ctx.sast_hint:
+            parts.append(f"Static analysis (Semgrep) flagged: {ctx.sast_hint}")
+        parts += [
             "",
             "Confirmed exploit (deterministically verified against the running app):",
             f"  {f.detail}",

@@ -71,6 +71,7 @@ def remediate_finding(
     profile: dict | None = None,
     max_attempts: int = 3,
     work_root: str | None = None,
+    sast_hint: str | None = None,
 ) -> RemediationResult:
     profile = profile or DEMO_PROFILE
     proposer = proposer or TemplateProposer()
@@ -81,7 +82,7 @@ def remediate_finding(
     handler_name = HANDLER_BY_CLASS[finding.vuln_class]
     block = codemod.extract_handler(original_source, handler_name)
     route = block.routes[0] if block.routes else finding.endpoint
-    ctx: FixContext = build_context(finding, block.text, route)
+    ctx: FixContext = build_context(finding, block.text, route, sast_hint=sast_hint)
 
     work_dir, app_path, backup_path = _make_working_copy(src_app_path, work_root)
     result = RemediationResult(finding=finding, status="needs_human_review",

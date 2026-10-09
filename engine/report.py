@@ -60,7 +60,7 @@ def _counts(outcomes: list[Outcome]) -> dict[str, int]:
 # --------------------------------------------------------------------------
 # Terminal
 # --------------------------------------------------------------------------
-def terminal_summary(outcomes: list[Outcome]) -> str:
+def terminal_summary(outcomes: list[Outcome], sast=None) -> str:
     lines = []
     for o in outcomes:
         f = o.finding
@@ -84,13 +84,34 @@ def terminal_summary(outcomes: list[Outcome]) -> str:
     c = _counts(outcomes)
     header = (f"Attack-Fix-Verify summary: {c['confirmed']} vulnerabilities confirmed, "
               f"{c['verified']} fixed & verified, {c['needs_review']} need human review")
-    return header + "\n" + "-" * len(header) + "\n" + "\n".join(lines)
+    body = header + "\n" + "-" * len(header) + "\n" + "\n".join(lines)
+    if sast is not None:
+        body += "\n" + _sast_terminal(sast)
+    return body
+
+
+def _sast_terminal(sast) -> str:
+    if not sast.ran:
+        return f"Semgrep (SAST): skipped - {sast.note}"
+    lines = [f"Semgrep (SAST) via {sast.runner}: {len(sast.findings)} static suspect(s)"]
+    if sast.cross is not None:
+        lines.append(f"  cross-check: {len(sast.cross.both)} confirmed by both, "
+                     f"{len(sast.cross.static_only)} static-only (likely FP), "
+                     f"{len(sast.cross.dynamic_only)} dynamic-only (SAST missed)")
+        for r in sast.cross.dynamic_only:
+            lines.append(f"    SAST MISSED: {r.vuln_class} {r.endpoint} "
+                         f"(found only by active attack)")
+    if sast.cleared:
+        done = ", ".join(f"{k}:{'cleared' if v else 'still-flagged'}"
+                         for k, v in sast.cleared.items())
+        lines.append(f"  post-fix rescan: {done}")
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------
 # Markdown
 # --------------------------------------------------------------------------
-def render_markdown(outcomes: list[Outcome], base_url: str, offline: bool) -> str:
+def render_markdown(outcomes: list[Outcome], base_url: str, offline: bool, sast=None) -> str:
     c = _counts(outcomes)
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     out = [
@@ -103,6 +124,8 @@ def render_markdown(outcomes: list[Outcome], base_url: str, offline: bool) -> st
         f"{c['needs_review']} need review**",
         "",
     ]
+    if sast is not None:
+        out += _sast_markdown(sast)
     for o in outcomes:
         f = o.finding
         out.append(f"## {CLASS_TITLES.get(f.vuln_class, f.vuln_class)} — {STATUS_LABEL[o.status]}")
@@ -182,7 +205,24 @@ def _diff_html(diff: str) -> str:
     return "\n".join(rows)
 
 
-def render_html(outcomes: list[Outcome], base_url: str, offline: bool) -> str:
+def _sast_markdown(sast) -> list[str]:
+    if not sast.ran:
+        return [f"> **Semgrep (SAST):** skipped — {sast.note}", ""]
+    out = [f"## Semgrep (SAST) — {len(sast.findings)} static suspect(s) via {sast.runner}", ""]
+    if sast.cross is not None:
+        out += ["| Vulnerability | Endpoint | Semgrep | Attack | Verdict |",
+                "|---|---|:--:|:--:|---|"]
+        for r in sast.cross.rows:
+            verdict = {"confirmed-by-both": "real bug (both agree)",
+                       "static-only": "likely false positive",
+                       "dynamic-only": "**SAST missed — caught only by active attack**"}[r.verdict]
+            out.append(f"| {r.vuln_class} | `{r.endpoint}` | "
+                       f"{'✅' if r.static else '—'} | {'✅' if r.dynamic else '—'} | {verdict} |")
+        out.append("")
+    return out
+
+
+def render_html(outcomes: list[Outcome], base_url: str, offline: bool, sast=None) -> str:
     c = _counts(outcomes)
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     cards = []
@@ -216,6 +256,10 @@ def render_html(outcomes: list[Outcome], base_url: str, offline: bool) -> str:
                     broken = ", ".join(x.name for x in last.good_path.failures)
                     parts.append(f'<div class="row no">Broken good-path checks: '
                                  f'{html.escape(broken)}</div>')
+            if sast is not None and f.vuln_class in sast.cleared:
+                parts.append('<div class="row checks">'
+                             + _check("Semgrep finding cleared", sast.cleared[f.vuln_class])
+                             + '</div>')
             if r.diff:
                 parts.append('<div class="row k" style="margin-top:12px">Applied fix (diff):</div>')
                 parts.append(f'<pre class="diff">{_diff_html(r.diff)}</pre>')
@@ -231,6 +275,7 @@ def render_html(outcomes: list[Outcome], base_url: str, offline: bool) -> str:
         '<div class="l">need human review</div></div>'
     )
     src = "template (offline)" if offline else "LLM (claude)"
+    sast_html = _sast_html(sast) if sast is not None else ""
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -239,5 +284,34 @@ def render_html(outcomes: list[Outcome], base_url: str, offline: bool) -> str:
 <h1>Attack-Fix-Verify Report</h1>
 <div class="meta">Target <code>{html.escape(base_url)}</code> · {now} · patches from {src}</div>
 <div class="tiles">{tiles}</div>
+{sast_html}
 {''.join(cards)}
 </div></body></html>"""
+
+
+def _sast_html(sast) -> str:
+    if not sast.ran:
+        return (f'<div class="card"><h2>Semgrep (SAST)</h2>'
+                f'<div class="row k">Skipped — {html.escape(sast.note)}</div></div>')
+    rows = ""
+    if sast.cross is not None:
+        trs = []
+        for r in sast.cross.rows:
+            verdict, cls = {
+                "confirmed-by-both": ("real bug (both agree)", "ok"),
+                "static-only": ("likely false positive", "k"),
+                "dynamic-only": ("SAST missed — caught only by active attack", "no"),
+            }[r.verdict]
+            trs.append(
+                f'<tr><td>{html.escape(r.vuln_class)}</td>'
+                f'<td><code>{html.escape(r.endpoint)}</code></td>'
+                f'<td style="text-align:center">{"✓" if r.static else "—"}</td>'
+                f'<td style="text-align:center">{"✓" if r.dynamic else "—"}</td>'
+                f'<td class="{cls}">{html.escape(verdict)}</td></tr>')
+        rows = ("<table style='width:100%;border-collapse:collapse;font-size:13.5px'>"
+                "<tr style='color:#9aa4b2;text-align:left'>"
+                "<th>Vulnerability</th><th>Endpoint</th><th>Semgrep</th>"
+                "<th>Attack</th><th>Verdict</th></tr>" + "".join(trs) + "</table>")
+    return (f'<div class="card"><h2>Semgrep (SAST) '
+            f'<span class="badge b-safe">{len(sast.findings)} suspects · {html.escape(sast.runner)}</span></h2>'
+            f'<div class="row k">Static analysis vs. active attacks:</div>{rows}</div>')
