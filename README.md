@@ -1,4 +1,4 @@
-# Attack-Fix-Verify — an autonomous security agent for AI-generated APIs
+# An autonomous security agent for AI-generated APIs
 
 AI now writes API code faster than anyone can security-test it. The usual loop is a human finds a bug, another human fixes it, someone re-tests this can't keep up.
 
