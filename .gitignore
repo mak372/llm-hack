@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Tool runtime artifacts
+target_app/app.db
+target_app/app.py.bak
+report.html
+report.md
+PR_BODY.md
+generated_tests/
+afv_work_*/
+
+# Secrets
+.env
