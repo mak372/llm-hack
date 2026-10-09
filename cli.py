@@ -63,6 +63,12 @@ def main(argv=None) -> int:
     p.add_argument("--tests-dir", default="generated_tests")
     p.add_argument("--report", default="report.html", help="report output path")
     p.add_argument("--format", choices=["html", "md"], default="html")
+    p.add_argument("--open-pr", action="store_true",
+                   help="apply verified fixes, add tests+report, and open a GitHub PR")
+    p.add_argument("--push", action="store_true",
+                   help="with --open-pr: push the branch and create the PR "
+                        "(needs an 'origin' remote and GITHUB_TOKEN)")
+    p.add_argument("--base-branch", default="main", help="base branch for the PR")
     p.add_argument("--restore", action="store_true",
                    help="restore --code from its .bak and exit")
     args = p.parse_args(argv)
@@ -94,6 +100,9 @@ def main(argv=None) -> int:
               "`ant auth login` profile, or use --offline for template patches.",
               file=sys.stderr)
 
+    apply_patches = args.apply or args.open_pr
+    do_gen_tests = args.gen_tests or args.open_pr
+
     outcomes: list[Outcome] = []
     verified_results = []
     for f in findings:
@@ -105,7 +114,7 @@ def main(argv=None) -> int:
         outcomes.append(Outcome(f, result))
         if result.verified:
             verified_results.append(result)
-            if args.apply:
+            if apply_patches:
                 _apply(args.code, result.patched_source)
 
     # ----- REPORT -----
@@ -120,9 +129,35 @@ def main(argv=None) -> int:
         fh.write(text)
     print(f"\nReport written to {args.report}")
 
-    if args.gen_tests and verified_results:
+    if do_gen_tests and verified_results:
         paths = regression.generate_regression_tests(verified_results, args.tests_dir)
         print(f"Generated {len(paths)} regression test file(s) in {args.tests_dir}")
+
+    # ----- PUBLISH (open a PR for the verified fixes) -----
+    if args.open_pr:
+        if not verified_results:
+            print("No verified fixes; nothing to publish as a PR.")
+        else:
+            from engine import publisher
+            body = publisher.build_pr_body(verified_results, args.base_url or args.code)
+            n = len(verified_results)
+            title = f"Security: fix {n} vulnerabilit{'y' if n == 1 else 'ies'} (verified by re-attack)"
+            files = [args.code, args.tests_dir, args.report]
+            try:
+                pr = publisher.open_pull_request(
+                    os.getcwd(), verified_results, files, title, body,
+                    base_branch=args.base_branch, push=args.push,
+                    token=os.environ.get("GITHUB_TOKEN"))
+            except publisher.PublishError as exc:
+                print(f"PR step failed: {exc}", file=sys.stderr)
+                return 1
+            if pr.pushed:
+                print(f"\nOpened pull request: {pr.pr_url}")
+            else:
+                print(f"\nCreated local branch '{pr.branch}' with the fix + tests + report.")
+                print(f"PR body written to {pr.body_path}.")
+                print("To publish: add a GitHub 'origin' remote and set GITHUB_TOKEN, "
+                      "then re-run with --open-pr --push (or push the branch and open a PR by hand).")
 
     # Exit non-zero if any confirmed vuln is not verified (useful for CI).
     unresolved = [o for o in outcomes
