@@ -144,6 +144,8 @@ _SYSTEM = (
     "- Change only this handler. Do not touch any other code.\n"
     "- Do NOT add import statements. Reuse the existing helpers current_user() "
     "and get_db(), and flask's jsonify/request which are already imported.\n"
+    "- Database rows (from current_user() and get_db() queries) behave like dicts: "
+    "read fields with row[\"col\"] or row.get(\"col\").\n"
     "- Keep the same function name and the same route path.\n"
     "- Make the minimal change that fixes the vulnerability.\n"
     "- Preserve legitimate behaviour: authorized callers must still succeed.\n"

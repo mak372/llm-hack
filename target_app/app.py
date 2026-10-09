@@ -34,10 +34,15 @@ def _hash(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 
+def _dict_row(cursor, row):
+    """Return rows as plain dicts so handlers can use row["x"] or row.get("x")."""
+    return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
+
+
 def get_db() -> sqlite3.Connection:
     if "db" not in g:
         g.db = sqlite3.connect(DB_PATH)
-        g.db.row_factory = sqlite3.Row
+        g.db.row_factory = _dict_row
     return g.db
 
 

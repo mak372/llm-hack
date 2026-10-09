@@ -56,6 +56,13 @@ def verify_fix(app_module: ModuleType, finding: Finding, profile: dict) -> Verif
     # Fresh, deterministic database for the patched app.
     app_module.init_db()
 
+    # A buggy proposed patch may make a handler raise; Flask turns that into a
+    # 500 (which the checks below treat as a failed attempt). Quiet the logging
+    # so a rejected patch doesn't dump an alarming traceback to the console.
+    import logging
+    app_module.app.logger.disabled = True
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
+
     with _client(app_module) as client:
         # 1. App starts / responds.
         try:
