@@ -145,6 +145,8 @@ def get_invoice(invoice_id: int):
     row = db.execute("SELECT * FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
     if row is None:
         return jsonify({"error": "not found"}), 404
+    if row["owner_id"] != user["id"] and not user.get("is_admin"):
+        return jsonify({"error": "forbidden"}), 403
     return jsonify(dict(row))
 
 
@@ -158,12 +160,9 @@ def search_invoices():
         return jsonify({"error": "unauthorized"}), 401
     q = request.args.get("q", "")
     db = get_db()
-    sql = (
-        "SELECT * FROM invoices WHERE owner_id = %d AND description LIKE '%%%s%%'"
-        % (user["id"], q)
-    )
+    sql = "SELECT * FROM invoices WHERE owner_id = ? AND description LIKE ?"
     try:
-        rows = db.execute(sql).fetchall()
+        rows = db.execute(sql, (user["id"], f"%{q}%")).fetchall()
     except sqlite3.Error as exc:
         # Leaks the DB error, which itself confirms injection.
         return jsonify({"error": str(exc)}), 500
@@ -178,7 +177,12 @@ def me():
     user = current_user()
     if user is None:
         return jsonify({"error": "unauthorized"}), 401
-    return jsonify(dict(user))
+    safe_user = {
+        "id": user.get("id"),
+        "username": user.get("username"),
+        "is_admin": user.get("is_admin")
+    }
+    return jsonify(safe_user)
 
 
 @app.get("/admin/users")
@@ -186,6 +190,11 @@ def admin_users():
     """BUG (missing authentication): lists every user with no token check.
     Fixed when an unauthenticated (or non-admin) caller gets 401/403 while an
     admin still gets 200."""
+    user = current_user()
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+    if not user.get("is_admin"):
+        return jsonify({"error": "Forbidden"}), 403
     db = get_db()
     rows = db.execute("SELECT id, username, is_admin FROM users").fetchall()
     return jsonify([dict(r) for r in rows])
