@@ -1,14 +1,13 @@
 # Attack-Fix-Verify — an autonomous security agent for AI-generated APIs
 
-AI now writes API code faster than anyone can security-test it. The usual loop —
-a human finds a bug, another human fixes it, someone re-tests — can't keep up.
+AI now writes API code faster than anyone can security-test it. The usual loop is a human finds a bug, another human fixes it, someone re-tests this can't keep up.
 
 This project is an **autonomous agent that closes that loop by itself**: it
 attacks a running API, confirms real vulnerabilities with evidence, uses an LLM
 to propose a fix, **proves the fix by re-running the exact attack**, and then
 opens a GitHub pull request with the patch, regression tests, and the evidence.
 
-> ### The core idea: *we don't trust the AI's fix — we trust the re-attack.*
+> ### The core idea:
 > The LLM only **proposes** a patch. Whether a fix actually works is decided by
 > plain, deterministic code that re-runs the original exploit. An LLM's opinion
 > can never mark something "fixed." If the re-attack still succeeds, the fix is
@@ -35,7 +34,7 @@ opens a GitHub pull request with the patch, regression tests, and the evidence.
          │ LLM proposes a minimal patch  →  applied to a *working copy*  │
          └─────────────────────────────────────────────────────────────┘
                                                            │
-   (4) VERIFY     deterministic — the authority            ▼
+   (4) VERIFY     deterministic - the authority            ▼
          ┌─────────────────────────────────────────────────────────────┐
          │ re-run the EXACT attack  +  good-path still works  +  app runs│
          │   all three pass → "verified"   |   else → retry (max 3)      │
@@ -48,31 +47,31 @@ opens a GitHub pull request with the patch, regression tests, and the evidence.
 ```
 
 **Only step 3 uses an LLM.** Steps 1, 2, 4 are ordinary Python. Attacking is
-dynamic testing (DAST) — it probes the running app's behavior, not its source.
+dynamic testing (DAST) it probes the running app's behavior, not its source.
 
 ### Step by step
 
-1. **ATTACK** (`engine/attacks.py`) — behaves like a real attacker over HTTP:
+1. **ATTACK** (`engine/attacks.py`) - behaves like a real attacker over HTTP:
    logs in as one user to read another's data, injects SQL, calls protected
    endpoints with no token, etc. It decides "vulnerable" by **comparing the
    actual response** (e.g. "did Bob get back a record he doesn't own?").
 2. **FLAG** — each confirmed exploit becomes a structured finding: the request,
    the response, and a copy-pasteable `curl` to reproduce it.
-3. **FIX** (`engine/fixer.py`) — the tool extracts **only the one vulnerable
+3. **FIX** (`engine/fixer.py`) - the tool extracts **only the one vulnerable
    handler** (via the AST) and asks an LLM for a minimal rewrite of *that
    function only*. The proposal is validated (same function, same route, no new
-   imports) and applied to a **working copy** — the original file is backed up
+   imports) and applied to a **working copy** the original file is backed up
    and never touched directly.
-4. **VERIFY** (`engine/verifier.py`) — **no LLM here.** A fix counts as verified
+4. **VERIFY** (`engine/verifier.py`) - **no LLM here.** A fix counts as verified
    only if all three hold on the patched app:
    - the **exact original attack now fails**,
    - the **good path still works** (e.g. the real owner can still read their own
-     record — this stops the LLM from "fixing" by breaking the endpoint), and
+     record, this stops the LLM from "fixing" by breaking the endpoint), and
    - the **app still starts**.
 
    If verification fails, the reason is fed back to the LLM and it retries, up to
    3 times, then the finding is marked **"needs human review."**
-5. **PUBLISH** (`engine/publisher.py`) — for verified fixes, the agent opens a
+5. **PUBLISH** (`engine/publisher.py`) - for verified fixes, the agent opens a
    **GitHub pull request** (via the REST API) carrying the patch, generated
    pytest regression tests, and an evidence report. The PR body states that every
    claim was confirmed by re-attack, not by an LLM.
@@ -97,8 +96,8 @@ by breaking or deleting the route.
 
 ## Semgrep: static analysis as a second opinion (`--sast`)
 
-With `--sast`, the agent also runs **Semgrep** (SAST — it reads the code) and
-**cross-checks** it against what the attacks actually confirmed (DAST — it probes
+With `--sast`, the agent also runs **Semgrep** (SAST - it reads the code) and
+**cross-checks** it against what the attacks actually confirmed (DAST - it probes
 behavior):
 
 | Result | Meaning |
@@ -108,7 +107,7 @@ behavior):
 | **Attack confirmed, Semgrep silent** | a bug static analysis missed |
 
 On this demo, Semgrep catches the **SQL injection** (a code-pattern bug) but
-**misses the IDOR, data exposure, and missing-auth bugs** — authorization/logic
+**misses the IDOR, data exposure, and missing-auth bugs** - authorization/logic
 flaws that static rules can't see. That's the point: **static analysis finds
 *where the code looks wrong*; the active attacker proves *what's actually
 exploitable*.** Semgrep's findings also feed the fix prompt (rule, line, CWE),
@@ -116,7 +115,7 @@ and after a fix the code is re-scanned as an extra verification signal.
 
 Semgrep has no native Windows build, so the tool runs it through **Docker**
 (auto-detected: local CLI → `python -m semgrep` → Docker → WSL). If no runner is
-available it **skips gracefully** — the core loop is never blocked.
+available it **skips gracefully** - the core loop is never blocked.
 
 ---
 
@@ -126,8 +125,8 @@ The patch "proposer" is pluggable, so the loop doesn't care who writes the fix:
 
 - **Gemini** (default) — Google `google-genai`; reads `GEMINI_API_KEY`, model via
   `GEMINI_MODEL` (default `gemini-3.6-flash`).
-- **Anthropic** — `--provider anthropic`; `claude-opus-5-5`, reads `ANTHROPIC_API_KEY`.
-- **Template** — `--offline`; deterministic known-good patches, no API key, no network.
+- **Anthropic** - `--provider anthropic`; `claude-opus-5-5`, reads `ANTHROPIC_API_KEY`.
+- **Template** - `--offline`; deterministic known-good patches, no API key, no network.
 
 If the chosen LLM is unavailable (missing key, unknown model, 503, network
 error), the agent **automatically falls back to the deterministic template
@@ -239,17 +238,10 @@ nothing and is freely repeatable.
 python -m pytest tests/ -q
 ```
 
-The suite proves the parts that matter — including that a fix which blocks the
+The suite proves the parts that matter including that a fix which blocks the
 attack **but breaks the good path is rejected**, and that the retry loop recovers
 from a bad first proposal.
 
 ---
 
-## Scope & honesty
-
-- Only these 4 vulnerability classes, REST APIs with token auth, intended for
-  **staging/test** environments — **never production**.
-- **"Verified" means the attacks we tried no longer work** — not that the code is
-  provably secure.
-- The target app is intentionally vulnerable; keep it out of any real deployment.
 ```
